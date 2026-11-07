@@ -12,10 +12,23 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
+#if defined(__x86_64__)
 #include <x86intrin.h>
+#elif defined(__aarch64__)
+static inline uint64_t __rdtsc(void) {
+    uint64_t val;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(val));
+    return val;
+}
+#endif
 #ifndef _WIN32
+#if defined(__linux__)
 #include <sys/random.h>
+#endif
 #include <sys/resource.h>
+#endif
+#ifndef CLOCK_REALTIME_COARSE
+#define CLOCK_REALTIME_COARSE CLOCK_REALTIME
 #endif
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))
 #define PAGE 16384
@@ -244,6 +257,8 @@ static ABI int32_t guest_sysctl(const int32_t *name,uint32_t namelen,void *old,u
         if (!old || !oldlen) return fail_posix(EINVAL);
 #ifdef _WIN32
         if (compat_random(old,(size_t)*oldlen)) return fail_posix(EIO);
+#elif defined(__APPLE__)
+        arc4random_buf(old,(size_t)*oldlen);
 #else
         if (getrandom(old,(size_t)*oldlen,0)<0) return fail_posix(errno);
 #endif

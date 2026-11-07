@@ -17,10 +17,13 @@
 #include <unistd.h>
 #ifdef _WIN32
 #include <windows.h>
-#else
+#elif defined(__linux__)
 #include <sys/syscall.h>
 #include <sys/mman.h>
 #include <asm/prctl.h>
+#elif defined(__APPLE__)
+#include <sys/mman.h>
+#include <pthread.h>
 #endif
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))
 #define ATTR_MAGIC UINT32_C(0x41545452)
@@ -84,6 +87,29 @@ static void set_gs(void *base) {
     if (!TlsSetValue(tls_slot,base)) { fprintf(stderr,"STOP: TlsSetValue failed (%lu)\n",GetLastError()); exit(21); }
 }
 #define tls_block_alloc(size) _aligned_malloc(size,64)
+#elif defined(__APPLE__)
+static pthread_key_t mac_tcb_key;
+static pthread_once_t mac_tcb_key_once = PTHREAD_ONCE_INIT;
+static void mac_init_tcb_key(void) {
+    if (pthread_key_create(&mac_tcb_key, NULL) != 0) {
+        perror("pthread_key_create");
+        exit(21);
+    }
+}
+uint32_t runtime_thread_tcb_offset(void) {
+    pthread_once(&mac_tcb_key_once, mac_init_tcb_key);
+    return (uint32_t)(mac_tcb_key * sizeof(void *));
+}
+static void set_gs(void *base) {
+    pthread_once(&mac_tcb_key_once, mac_init_tcb_key);
+    pthread_setspecific(mac_tcb_key, base);
+}
+static inline void *mac_aligned_alloc(size_t align, size_t size) {
+    void *p = NULL;
+    if (posix_memalign(&p, align < sizeof(void*) ? sizeof(void*) : align, size) != 0) return NULL;
+    return p;
+}
+#define tls_block_alloc(size) mac_aligned_alloc(64, size)
 #else
 static void set_gs(void *base) {
     if (syscall(SYS_arch_prctl,ARCH_SET_GS,(unsigned long)base)) { perror("STOP: arch_prctl(ARCH_SET_GS)"); exit(21); }
@@ -253,7 +279,11 @@ static ABI int32_t attr_set_guard(ThreadAttr **slot,uint64_t size) {
 static void set_host_name(const char *name) {
     char host[16]={0};
     memcpy(host,name,strnlen(name,sizeof(host)-1));
+#ifdef __APPLE__
+    pthread_setname_np(host);
+#else
     pthread_setname_np(pthread_self(),host);
+#endif
 }
 #ifdef _WIN32
 #define exit_setjmp(t) bb_setjmp((t)->exit_jump)

@@ -17,7 +17,11 @@ extern __thread sigjmp_buf *runtime_fault_recover;
 void runtime_restart(void);
 /* BB_GAME_RES: rewrites the display configuration the game initializes (runtime_display.c). */
 void runtime_display_patch(unsigned char *image, uint64_t image_size);
+#if defined(__x86_64__)
 #define ABI __attribute__((sysv_abi))
+#else
+#define ABI
+#endif
 typedef void (ABI *GuestCallback)(void);
 void runtime_start(uint64_t capabilities);
 uintptr_t runtime_resolve(const char *name, int is_data);

@@ -208,6 +208,9 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
     if (enable_debug_utils) {
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
+#if defined(__APPLE__)
+    extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#endif
 
     // Sanitize extension list
     std::erase_if(extensions, [&](const char* extension) -> bool {
@@ -270,9 +273,15 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
         char path[PATH_MAX];
         u32 length = PATH_MAX;
         _NSGetExecutablePath(path, &length);
-        return std::filesystem::path(path).parent_path();
+        auto p = std::filesystem::path(path).parent_path();
+        if (std::filesystem::exists(p / "MoltenVK_icd.json")) return (p / "MoltenVK_icd.json").string();
+        if (std::filesystem::exists("/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json"))
+            return std::string("/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json");
+        return p.string();
     }();
-    setenv("VK_DRIVER_FILES", icd_path.c_str(), true);
+    if (!std::getenv("VK_DRIVER_FILES") && !std::getenv("VK_ICD_FILENAMES")) {
+        setenv("VK_DRIVER_FILES", icd_path.c_str(), 1);
+    }
 #endif
 
     static vk::detail::DynamicLoader dl;
@@ -412,14 +421,19 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
         },
     };
 
+    vk::InstanceCreateInfo instance_ci = {
+#if defined(__APPLE__)
+        .flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR,
+#endif
+        .pApplicationInfo = &application_info,
+        .enabledLayerCount = static_cast<u32>(layers.size()),
+        .ppEnabledLayerNames = layers.data(),
+        .enabledExtensionCount = static_cast<u32>(extensions.size()),
+        .ppEnabledExtensionNames = extensions.data(),
+    };
+
     vk::StructureChain<vk::InstanceCreateInfo, vk::LayerSettingsCreateInfoEXT> instance_ci_chain = {
-        vk::InstanceCreateInfo{
-            .pApplicationInfo = &application_info,
-            .enabledLayerCount = static_cast<u32>(layers.size()),
-            .ppEnabledLayerNames = layers.data(),
-            .enabledExtensionCount = static_cast<u32>(extensions.size()),
-            .ppEnabledExtensionNames = extensions.data(),
-        },
+        instance_ci,
         vk::LayerSettingsCreateInfoEXT{
             .settingCount = layer_setings.size(),
             .pSettings = layer_setings.data(),

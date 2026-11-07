@@ -12,7 +12,9 @@
 #define _GNU_SOURCE
 #include "cpu_patch.h"
 #include <Zydis/Zydis.h>
+#if defined(__x86_64__)
 #include <cpuid.h>
+#endif
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -22,6 +24,12 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0
+#endif
 #endif
 
 enum { NEED_BMI1=1, NEED_LZCNT=2, NEED_MOVBE=4 };
@@ -43,11 +51,15 @@ static size_t breakpoint_count, missed_count;
 static pthread_mutex_t missed_lock=PTHREAD_MUTEX_INITIALIZER;
 
 static unsigned host_missing(void) {
+#if defined(__x86_64__)
     unsigned a,b,c,d,missing=0;
     if (!__get_cpuid_count(7,0,&a,&b,&c,&d) || !(b&(1u<<3))) missing|=NEED_BMI1;
     if (!__get_cpuid(0x80000001,&a,&b,&c,&d) || !(c&(1u<<5))) missing|=NEED_LZCNT;
     if (!__get_cpuid(1,&a,&b,&c,&d) || !(c&(1u<<22))) missing|=NEED_MOVBE;
     return missing;
+#else
+    return 0;
+#endif
 }
 /* The rest of Jaguar's instruction set has no rewrite: name what is missing. */
 static void report_unsupported(void) {
@@ -78,6 +90,10 @@ static unsigned char *near_image(size_t size) {
 #ifdef _WIN32
         void *p=VirtualAlloc((void *)(uintptr_t)at,size,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);
         if (p) return p;
+#elif defined(__APPLE__)
+        void *p=mmap((void *)(uintptr_t)at,size,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANON,-1,0);
+        if (p==(void *)(uintptr_t)at) return p;
+        if (p!=MAP_FAILED) munmap(p,size);
 #else
         void *p=mmap((void *)(uintptr_t)at,size,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
         if (p==(void *)(uintptr_t)at) return p;

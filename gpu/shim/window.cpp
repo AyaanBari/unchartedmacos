@@ -3,6 +3,9 @@
 #include <cstring>
 #include <string>
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <SDL3/SDL_metal.h>
+#endif
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "sdl_window.h"
@@ -116,6 +119,14 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
         window_info.render_surface = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
     } else
 #endif
+#ifdef __APPLE__
+    if (driver && !std::strcmp(driver, "cocoa")) {
+        window_info.type = WindowSystemType::Metal;
+        SDL_MetalView mv = SDL_Metal_CreateView(window);
+        metal_view = static_cast<void*>(mv);
+        window_info.render_surface = mv ? SDL_Metal_GetLayer(mv) : nullptr;
+    } else
+#endif
     if (driver && !std::strcmp(driver, "x11")) {
         window_info.type = WindowSystemType::X11;
         window_info.display_connection = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
@@ -135,6 +146,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
 }
 
 WindowSDL::~WindowSDL() {
+#ifdef __APPLE__
+    if (metal_view) {
+        SDL_Metal_DestroyView(static_cast<SDL_MetalView>(metal_view));
+        metal_view = nullptr;
+    }
+#endif
     SDL_DestroyWindow(window);
 }
 

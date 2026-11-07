@@ -44,6 +44,7 @@ private:
     std::string text, text_prompt, base_title;
     void UpdateTextTitle();
     SDL_Window* window{};
+    void* metal_view{};
     WindowSystemInfo window_info{};
 };
 

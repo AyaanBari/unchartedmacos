@@ -53,13 +53,17 @@ static int has_extension(VkPhysicalDevice device, const char *name) {
 static int live_resolution_suits(VkPhysicalDevice device) {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(device, &props);
+#if defined(__APPLE__)
+    const int discrete = 1; /* Apple Silicon GPU has high-throughput unified memory */
+#else
     const int discrete = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+#endif
     const VkDeviceSize memory = largest_local_heap(device);
     const int old_nvidia = props.vendorID == 0x10de &&
                            !has_extension(device, "VK_KHR_fragment_shader_barycentric");
     const int suits = discrete && memory >= (VkDeviceSize)7680 << 20 && !old_nvidia;
     fprintf(stderr, "GPU: %s, %s, %llu MiB: live resolution changes %s\n", props.deviceName,
-            discrete ? "discrete" : "integrated or other", (unsigned long long)(memory >> 20),
+            discrete ? "discrete / Apple Silicon" : "integrated or other", (unsigned long long)(memory >> 20),
             suits ? "on" : "off (startup resolution patch)");
     return suits;
 }
@@ -71,10 +75,21 @@ int main(int argc, char **argv) {
         .pApplicationName = "bbport scene scaling probe",
         .apiVersion = VK_API_VERSION_1_3,
     };
+#if defined(__APPLE__)
+    const char *inst_exts[] = {"VK_KHR_portability_enumeration"};
+    const VkInstanceCreateInfo create = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .flags = 0x00000001, /* VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR */
+        .enabledExtensionCount = 1,
+        .ppEnabledExtensionNames = inst_exts,
+        .pApplicationInfo = &app,
+    };
+#else
     const VkInstanceCreateInfo create = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo = &app,
     };
+#endif
     VkInstance instance = VK_NULL_HANDLE;
     if (vkCreateInstance(&create, NULL, &instance) != VK_SUCCESS) {
         fputs("GPU scene scaling: cannot create Vulkan instance\n", stderr);

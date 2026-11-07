@@ -31,17 +31,28 @@ def fail(message):
 
 
 def wait_for(pid):
-    kernel32 = ctypes.windll.kernel32
-    SYNCHRONIZE = 0x00100000
-    handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-    if handle:
-        kernel32.WaitForSingleObject(handle, 30000)
-        kernel32.CloseHandle(handle)
+    if sys.platform == 'win32':
+        kernel32 = ctypes.windll.kernel32
+        SYNCHRONIZE = 0x00100000
+        handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if handle:
+            kernel32.WaitForSingleObject(handle, 30000)
+            kernel32.CloseHandle(handle)
+    else:
+        import time, os
+        for _ in range(300):
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.1)
+            except OSError:
+                break
 
 
 def no_console():
     """Started without a console (the launcher): console programs must not open their own."""
-    return 0 if ctypes.windll.kernel32.GetConsoleWindow() else subprocess.CREATE_NO_WINDOW
+    if sys.platform == 'win32':
+        return 0 if ctypes.windll.kernel32.GetConsoleWindow() else subprocess.CREATE_NO_WINDOW
+    return 0
 
 
 def run_script(name, *args):
@@ -49,16 +60,23 @@ def run_script(name, *args):
     script = ['--script'] if getattr(sys, 'frozen', False) else []
     command = [sys.executable, *script, str(PORT / 'scripts' / name), *map(str, args)]
     # stdin given: the output handles are passed explicitly (a windowed child would get none).
-    result = subprocess.run(command, stdin=subprocess.DEVNULL, creationflags=no_console())
+    kwargs = {'creationflags': no_console()} if sys.platform == 'win32' else {}
+    result = subprocess.run(command, stdin=subprocess.DEVNULL, **kwargs)
     if result.returncode:
         sys.exit(result.returncode)
 
 
 def find_executable(name):
     """bin/ (packaged), else out/ (built with build.sh)."""
-    for candidate in (PORT / 'bin' / name, PORT / 'out' / name):
-        if candidate.is_file():
-            return candidate
+    names = [name]
+    if name.endswith('.exe'):
+        names.append(name[:-4])
+    else:
+        names.append(name + '.exe')
+    for n in names:
+        for candidate in (PORT / 'bin' / n, PORT / 'out' / n):
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -276,7 +294,8 @@ def main():
             command += ['--trophies', str(trophy_dir)]
         loadexec.unlink(missing_ok=True)
         # No stdin: an inherited pipe (shells such as Git Bash) cost the game its console output.
-        code = subprocess.run([*command, *args], stdin=subprocess.DEVNULL, creationflags=no_console()).returncode
+        kwargs = {'creationflags': no_console()} if sys.platform == 'win32' else {}
+        code = subprocess.run([*command, *args], stdin=subprocess.DEVNULL, **kwargs).returncode
         if code != LOADEXEC_EXIT or not loadexec.is_file():
             return code
         lines = loadexec.read_text(encoding='utf-8', errors='replace').splitlines()

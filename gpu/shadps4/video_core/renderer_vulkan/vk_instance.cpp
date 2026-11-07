@@ -276,6 +276,13 @@ bool Instance::CreateDevice() {
     ASSERT_MSG(add_extension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
 
+    // MoltenVK / Metal portability subset (required by Vulkan spec when exposed by driver)
+#ifdef VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
+    add_extension(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+#else
+    add_extension("VK_KHR_portability_subset");
+#endif
+
     const auto robustness2_features = feature_chain.get<vk::PhysicalDeviceRobustness2FeaturesEXT>();
     ASSERT_MSG(robustness2_features.robustBufferAccess2,
                "Required Vulkan feature unavailable: robustBufferAccess2");

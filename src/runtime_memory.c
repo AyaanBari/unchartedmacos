@@ -23,6 +23,12 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
+#ifndef MAP_ANONYMOUS
+#define MAP_ANONYMOUS MAP_ANON
+#endif
 #endif
 /* sceKernelGetDirectMemorySize on retail PS4: 5056 MiB. BB_DMEM_MB raises it (the resolution
  * patches above 1080p need about 4 GiB more; run.sh sets it). */
@@ -313,7 +319,20 @@ static int pool(void) {
 /* Direct memory occupies [0,POOL_SIZE) of the memfd, flexible memory [POOL_SIZE,+FLEX_SPAN). */
 static int pool(void) {
     if (pool_fd>=0) return 0;
+#if defined(__APPLE__)
+    char shm_name[64];
+    snprintf(shm_name, sizeof(shm_name), "/bb-guest-%d", getpid());
+    pool_fd = shm_open(shm_name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (pool_fd >= 0) {
+        shm_unlink(shm_name);
+    } else {
+        char temp_path[] = "/tmp/bb-guest-XXXXXX";
+        pool_fd = mkstemp(temp_path);
+        if (pool_fd >= 0) unlink(temp_path);
+    }
+#else
     pool_fd=memfd_create("bb-guest-memory", MFD_CLOEXEC);
+#endif
     if (pool_fd<0 || ftruncate(pool_fd,(off_t)(POOL_SIZE+FLEX_SPAN))) return -1;
     void *view=mmap(NULL,POOL_SIZE+FLEX_SPAN,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,pool_fd,0);
     if (view==MAP_FAILED) return -1;
@@ -331,7 +350,14 @@ static int host_map(uintptr_t address, uint64_t size, int prot, int reserved, ui
 static int host_unmap(uintptr_t address, uint64_t size) { return munmap((void *)address,size); }
 static int host_protect(uintptr_t address, uint64_t size, int prot) { return mprotect((void *)address,size,prot); }
 static void host_discard(uint64_t phys, uint64_t size) {
+#if defined(__APPLE__)
+    if (backing_base) {
+        memset(backing_base + phys, 0, size);
+        madvise(backing_base + phys, size, MADV_DONTNEED);
+    }
+#else
     fallocate(pool_fd,FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,(off_t)phys,(off_t)size);
+#endif
 }
 #endif
 static void queue_hook(int kind, uintptr_t address, uint64_t size) {
@@ -769,6 +795,21 @@ void *runtime_low_map(size_t size, int prot) {
     }
     write_unlock();
     return p;
+#elif defined(__APPLE__)
+    void *p=NULL;
+    while (!p && low_next+size<=USER_MIN) {
+        void *try_p=mmap((void *)low_next,size,prot,MAP_PRIVATE|MAP_ANON,-1,0);
+        if (try_p!=MAP_FAILED) {
+            if (try_p==(void *)low_next) {
+                p=try_p;
+            } else {
+                munmap(try_p,size);
+            }
+        }
+        low_next+=size+PAGE;
+    }
+    write_unlock();
+    return p;
 #else
     void *p=MAP_FAILED;
     while (low_next+size<=USER_MIN) {
@@ -792,6 +833,15 @@ void *runtime_image_map(size_t size, int prot) {
     for (uintptr_t at=IMAGE_MIN; !p && at+size<=IMAGE_LIMIT; at+=UINT64_C(0x100000)) {
 #ifdef _WIN32
         p=VirtualAlloc((void *)at,size,MEM_RESERVE|MEM_COMMIT,win_prot(prot));
+#elif defined(__APPLE__)
+        void *try_p=mmap((void *)at,size,prot,MAP_PRIVATE|MAP_ANON,-1,0);
+        if (try_p!=MAP_FAILED) {
+            if (try_p==(void *)at) {
+                p=try_p;
+            } else {
+                munmap(try_p,size);
+            }
+        }
 #else
         p=mmap((void *)at,size,prot,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
         if (p==MAP_FAILED) p=NULL;

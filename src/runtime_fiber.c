@@ -86,9 +86,23 @@ static __attribute__((noinline)) FiberThread *this_thread(void) {
 }
 
 /* fiber_swap(save, load): suspend here (*save = stack pointer) and resume the context whose
- * stack pointer is load. fiber_start begins a fresh context: rbx = GuestFiber. */
+ * stack pointer is load. fiber_start begins a fresh context: rbx / x19 = GuestFiber. */
 ABI void fiber_swap(uint64_t *save,uint64_t load);
 ABI void fiber_start(void);
+#if defined(__x86_64__)
+#if defined(__APPLE__)
+__asm__(".text\n"
+        ".globl _fiber_swap\n_fiber_swap:\n"
+        " push %rbp\n push %rbx\n push %r12\n push %r13\n push %r14\n push %r15\n"
+        " sub $8,%rsp\n stmxcsr (%rsp)\n fnstcw 4(%rsp)\n"
+        " mov %rsp,(%rdi)\n"
+        " mov %rsi,%rsp\n"
+        " ldmxcsr (%rsp)\n fldcw 4(%rsp)\n add $8,%rsp\n"
+        " pop %r15\n pop %r14\n pop %r13\n pop %r12\n pop %rbx\n pop %rbp\n"
+        " ret\n"
+        ".globl _fiber_start\n_fiber_start:\n"
+        " mov %rbx,%rdi\n and $-16,%rsp\n call _fiber_main\n ud2\n");
+#else
 __asm__(".text\n"
         ".globl fiber_swap\nfiber_swap:\n"
         " push %rbp\n push %rbx\n push %r12\n push %r13\n push %r14\n push %r15\n"
@@ -100,6 +114,72 @@ __asm__(".text\n"
         " ret\n"
         ".globl fiber_start\nfiber_start:\n"
         " mov %rbx,%rdi\n and $-16,%rsp\n call fiber_main\n ud2\n");
+#endif
+#elif defined(__aarch64__)
+#if defined(__APPLE__)
+__asm__(".text\n"
+        ".globl _fiber_swap\n_fiber_swap:\n"
+        " sub sp, sp, #144\n"
+        " stp x19, x20, [sp, #0]\n"
+        " stp x21, x22, [sp, #16]\n"
+        " stp x23, x24, [sp, #32]\n"
+        " stp x25, x26, [sp, #48]\n"
+        " stp x27, x28, [sp, #64]\n"
+        " stp x29, x30, [sp, #80]\n"
+        " stp d8,  d9,  [sp, #96]\n"
+        " stp d10, d11, [sp, #112]\n"
+        " stp d12, d13, [sp, #128]\n"
+        " mov x8, sp\n"
+        " str x8, [x0]\n"
+        " mov sp, x1\n"
+        " ldp d12, d13, [sp, #128]\n"
+        " ldp d10, d11, [sp, #112]\n"
+        " ldp d8,  d9,  [sp, #96]\n"
+        " ldp x29, x30, [sp, #80]\n"
+        " ldp x27, x28, [sp, #64]\n"
+        " ldp x25, x26, [sp, #48]\n"
+        " ldp x23, x24, [sp, #32]\n"
+        " ldp x21, x22, [sp, #16]\n"
+        " ldp x19, x20, [sp, #0]\n"
+        " add sp, sp, #144\n"
+        " ret\n"
+        ".globl _fiber_start\n_fiber_start:\n"
+        " mov x0, x19\n"
+        " bl _fiber_main\n"
+        " brk #0\n");
+#else
+__asm__(".text\n"
+        ".globl fiber_swap\nfiber_swap:\n"
+        " sub sp, sp, #144\n"
+        " stp x19, x20, [sp, #0]\n"
+        " stp x21, x22, [sp, #16]\n"
+        " stp x23, x24, [sp, #32]\n"
+        " stp x25, x26, [sp, #48]\n"
+        " stp x27, x28, [sp, #64]\n"
+        " stp x29, x30, [sp, #80]\n"
+        " stp d8,  d9,  [sp, #96]\n"
+        " stp d10, d11, [sp, #112]\n"
+        " stp d12, d13, [sp, #128]\n"
+        " mov x8, sp\n"
+        " str x8, [x0]\n"
+        " mov sp, x1\n"
+        " ldp d12, d13, [sp, #128]\n"
+        " ldp d10, d11, [sp, #112]\n"
+        " ldp d8,  d9,  [sp, #96]\n"
+        " ldp x29, x30, [sp, #80]\n"
+        " ldp x27, x28, [sp, #64]\n"
+        " ldp x25, x26, [sp, #48]\n"
+        " ldp x23, x24, [sp, #32]\n"
+        " ldp x21, x22, [sp, #16]\n"
+        " ldp x19, x20, [sp, #0]\n"
+        " add sp, sp, #144\n"
+        " ret\n"
+        ".globl fiber_start\nfiber_start:\n"
+        " mov x0, x19\n"
+        " bl fiber_main\n"
+        " brk #0\n");
+#endif
+#endif
 
 const char *runtime_fiber_name_here(void) {
     const GuestFiber *f=this_thread()->current;
@@ -136,6 +216,7 @@ static uint64_t context_of(GuestFiber *fiber,uint64_t below) {
     if (rsp) { fiber->saved_rsp=0; return rsp; }
     uint64_t top=fiber->addr_context ? (uint64_t)(fiber->addr_context+fiber->size_context) : below-512;
     top&=~UINT64_C(15);
+#if defined(__x86_64__)
     uint64_t *frame=(uint64_t *)(top-64);
     uint32_t mxcsr=0x9fc0; uint16_t fpucw=0x037f;
     if (!(fiber->flags&FLAG_SET_FPU)) {
@@ -147,6 +228,14 @@ static uint64_t context_of(GuestFiber *fiber,uint64_t below) {
     frame[5]=(uint64_t)(uintptr_t)fiber;             /* rbx */
     frame[6]=0;                                      /* rbp: ends frame-pointer walks */
     frame[7]=(uint64_t)(uintptr_t)fiber_start;
+#elif defined(__aarch64__)
+    uint64_t *frame=(uint64_t *)(top-144);
+    memset(frame, 0, 144);
+    frame[0]=(uint64_t)(uintptr_t)fiber;             /* x19 */
+    frame[11]=(uint64_t)(uintptr_t)fiber_start;       /* x30 / lr */
+#else
+    uint64_t *frame=(uint64_t *)(top-64);
+#endif
     ++fibers_started;
     return (uint64_t)(uintptr_t)frame;
 }
